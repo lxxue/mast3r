@@ -124,7 +124,7 @@ def pycolmap_run_triangulator(colmap_db_path, prior_recon_path, recon_path, imag
     )
 
 
-def pycolmap_run_mapper(colmap_db_path, recon_path, image_root_path):
+def pycolmap_run_mapper(colmap_db_path, recon_path, image_root_path, fix_intrinsics=False):
     print("running mapping")
     reconstructions = pycolmap.incremental_mapping(
         database_path=colmap_db_path,
@@ -132,12 +132,15 @@ def pycolmap_run_mapper(colmap_db_path, recon_path, image_root_path):
         output_path=recon_path,
         options=pycolmap.IncrementalPipelineOptions({'multiple_models': False,
                                                      'extract_colors': True,
+                                                     'ba_refine_focal_length': not fix_intrinsics,
+                                                     'ba_refine_principal_point': not fix_intrinsics,
+                                                     'ba_refine_extra_params': not fix_intrinsics,
                                                      })
     )
 
 
-def glomap_run_mapper(glomap_bin, colmap_db_path, recon_path, image_root_path):
-    print("running mapping")
+def glomap_run_mapper(glomap_bin, colmap_db_path, recon_path, image_root_path, fix_intrinsics=False):
+    print("running glomap mapping")
     args = [
         'mapper',
         '--database_path',
@@ -145,8 +148,14 @@ def glomap_run_mapper(glomap_bin, colmap_db_path, recon_path, image_root_path):
         '--image_path',
         image_root_path,
         '--output_path',
-        recon_path
+        recon_path,
+        '--GlobalPositioning.use_gpu',
+        '1',
+        '--BundleAdjustment.use_gpu',
+        '1',
     ]
+    if fix_intrinsics:
+        args += ['--BundleAdjustment.optimize_intrinsics', '0']
     args.insert(0, glomap_bin)
     glomap_process = subprocess.Popen(args)
     glomap_process.wait()
@@ -157,7 +166,7 @@ def glomap_run_mapper(glomap_bin, colmap_db_path, recon_path, image_root_path):
             f' {glomap_process.returncode} )')
 
 
-def kapture_import_image_folder_or_list(images_path: Union[str, Tuple[str, List[str]]], use_single_camera=False) -> kapture.Kapture:
+def kapture_import_image_folder_or_list(images_path: Union[str, Tuple[str, List[str]]], use_single_camera=False, focal_length=None) -> kapture.Kapture:
     images = kapture.RecordsCamera()
 
     if isinstance(images_path, str):
@@ -177,13 +186,19 @@ def kapture_import_image_folder_or_list(images_path: Union[str, Tuple[str, List[
             with PIL.Image.open(path.join(images_root, filename)) as im:
                 width, height = im.size
                 model_params = [width, height]
+            if focal_length is not None:
+                model_params.append(focal_length)
+                model_params.append(width // 2)
+                model_params.append(height // 2)
         except (OSError, PIL.UnidentifiedImageError):
             # It is not a valid image: skip it
             print(f'Skipping invalid image file {filename}')
             continue
 
         camera_id = f'sensor'
-        if use_single_camera and camera_id not in sensors:
+        if use_single_camera and camera_id not in sensors and focal_length is not None:
+            sensors[camera_id] = kapture.Camera(kapture.CameraType.SIMPLE_PINHOLE, model_params)
+        elif use_single_camera and camera_id not in sensors:
             sensors[camera_id] = kapture.Camera(kapture.CameraType.UNKNOWN_CAMERA, model_params)
         elif use_single_camera:
             assert sensors[camera_id].camera_params[0] == width and sensors[camera_id].camera_params[1] == height
